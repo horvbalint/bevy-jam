@@ -1,43 +1,29 @@
 use bevy::{prelude::*, utils::Duration};
+use bevy_kira_audio::Audio;
 use bevy_prototype_lyon::prelude::*;
 use heron::prelude::*;
 use bevy_tweening::*;
-use crate::{bullet, Layer};
+use crate::bullet;
+use crate::game;
 
-const LIN_VEL: f32 = 20.;
-const ANG_VEL: f32 = 3.5;
-const DUMP_VEL: f32 = 8.;
-const DASH_VEL: f32 = 20.;
-const DASH_DUR: f32 = 0.1;
-const COOLDOWN_DUR: f32 = 1.0;
+pub const MAX_SPEED: f32 = 400.;
+pub const LIN_VEL: f32 = 1600.;
+pub const ANG_VEL: f32 = 3.5;
+pub const DUMP_VEL: f32 = 8.;
+pub const DASH_SPEED: f32 = 1600.;
+pub const DASH_DUR: f32 = 0.1;
+pub const COOLDOWN_DUR: f32 = 1.0;
 
-struct DashTimer(Timer);
+pub struct DashTimer(pub Timer);
 impl DashTimer {
     pub fn new(seconds: f32) -> Self {Self(Timer::from_seconds(seconds, false))}
 }
 
-struct CooldownTimer(Timer);
+pub struct CooldownTimer(pub Timer);
 impl CooldownTimer {
     pub fn new(seconds: f32) -> Self {Self(Timer::from_seconds(seconds, false))}
 }
 
-pub struct PlayerPlugin;
-
-impl Plugin for PlayerPlugin {
-    fn build(&self, app: &mut App) {
-        app
-            .insert_resource(DashTimer::new(DASH_DUR))
-            .insert_resource(CooldownTimer::new(COOLDOWN_DUR))
-            .add_system(component_animator_system::<DrawMode>)
-            .add_startup_system(spawn_players)
-            .add_system(handle_move_inputs.label("input"))
-            .add_system(move_players.label("move").after("input"))
-            .add_system(handle_action_button_for_runner.after("move").label("action"))
-            .add_system(handle_action_button_for_tagger.after("move").label("action"))
-            .add_system(handle_dash_timer_for_runner)
-            .add_system(handle_cooldown_timer_for_runner);
-    }
-}
 
 #[derive(Component)]
 pub struct Dash;
@@ -53,6 +39,9 @@ pub struct Runner;
 
 #[derive(Component)]
 pub struct Player1;
+
+#[derive(Component)]
+pub struct Player2;
 
 pub struct Keys {
     up: KeyCode,
@@ -97,18 +86,14 @@ impl Lens<DrawMode> for DrawColorLens {
     }
 }
 
-fn spawn_players(
+pub fn spawn_players(
     mut commands: Commands,
     windows: Res<Windows>,
 ) {
     // DEFINING SHARED PLAYER PROPERTIES
-    let shape = shapes::Polygon {
-        points: vec![
-            Vec2::new(-15., -15.),
-            Vec2::new(15., -15.),
-            Vec2::new(0., 25.),
-        ],
-        closed: true,
+    let shape = shapes::SvgPathShape {
+        svg_doc_size_in_px: Vec2::new(31.7, 44.),
+        svg_path_string: "M 1.2681 34.1401 Q -1.6782 43.8592 4.2145 43.8592 L 27.7855 43.8592 Q 33.6782 43.8592 30.7319 34.1401 L 21.8927 8.2224 Q 16 -7.9761 10.1073 8.2224".to_owned()
     };
 
     let primary_window = windows.get_primary().unwrap();
@@ -118,15 +103,15 @@ fn spawn_players(
     // SPAWNING PLAYER 1
     commands.spawn_bundle(GeometryBuilder::build_as(
         &shape,
-        DrawMode::Fill(FillMode::color(Color::rgb(181./255., 90./255., 214./255.))),
+        DrawMode::Fill(FillMode::color(game::TAGGER_COL)),
         Transform {
             translation: Vec3::new(-x_dist, y_pos, 1.),
             ..Default::default()
         },
     ))
     .insert(RigidBody::KinematicPositionBased)
-    .insert(CollisionShape::Sphere{radius: 20.})
-    .insert(CollisionLayers::new(Layer::Tagger, Layer::Tagger))
+    .insert(CollisionShape::Capsule{radius: 10., half_segment: 12.})
+    .insert(CollisionLayers::new(game::Layer::Tagger, game::Layer::Tagger))
     .insert(Player::new(Keys {
         up: KeyCode::W,
         down: KeyCode::S,
@@ -134,20 +119,22 @@ fn spawn_players(
         right: KeyCode::D,
         action: KeyCode::Space,
     }))
-    .insert(Tagger);
+    .insert(Tagger)
+    .insert(Player1)
+    .insert(game::GameEntity);
 
     // SPAWNING PLAYER 2
     commands.spawn_bundle(GeometryBuilder::build_as(
         &shape,
-        DrawMode::Fill(FillMode::color(Color::BLUE)),
+        DrawMode::Fill(FillMode::color(game::RUNNER_COL)),
         Transform {
             translation: Vec3::new(x_dist, y_pos, 1.),
             ..Default::default()
         },
     ))
     .insert(RigidBody::KinematicPositionBased)
-    .insert(CollisionShape::Sphere{radius: 20.})
-    .insert(CollisionLayers::new(Layer::Runner, Layer::Runner))
+    .insert(CollisionShape::Capsule{radius: 10., half_segment: 10.})
+    .insert(CollisionLayers::new(game::Layer::Runner, game::Layer::Runner))
     .insert(Player::new(Keys {
         up: KeyCode::Up,
         down: KeyCode::Down,
@@ -155,10 +142,12 @@ fn spawn_players(
         right: KeyCode::Right,
         action: KeyCode::Return,
     }))
-    .insert(Runner);
+    .insert(Runner)
+    .insert(Player2)
+    .insert(game::GameEntity);
 }
 
-fn handle_move_inputs(
+pub fn handle_move_inputs(
     keys: Res<Input<KeyCode>>,
     time: Res<Time>,
     mut query: Query<(&mut Player, Option<&Dash>)>,
@@ -179,7 +168,7 @@ fn handle_move_inputs(
             }
 
             // Making sure it doesn't accelerate to high
-            player.velocity = player.velocity.clamp(-5., 5.);
+            player.velocity = player.velocity.clamp(-MAX_SPEED, MAX_SPEED);
         }
 
         // Handling right/left movement
@@ -193,14 +182,18 @@ fn handle_move_inputs(
 }
 
 
-fn handle_action_button_for_tagger(
+pub fn handle_action_button_for_tagger(
     mut commands: Commands,
     keys: Res<Input<KeyCode>>,
+    audio: Res<Audio>,
+    shoot_sound: Res<crate::ShootSound>,
     query: Query<(Entity, &Player, &Transform), With<Tagger>>,
 ) {
     let (entity, player, transform) = query.single();
 
     if keys.just_pressed(player.keys.action) {
+        audio.play(shoot_sound.0.clone());
+        
         bullet::spawn_bullet(
             &mut commands,
             transform.translation.clone(),
@@ -210,16 +203,18 @@ fn handle_action_button_for_tagger(
     }
 }
 
-fn handle_action_button_for_runner(
+pub fn handle_action_button_for_runner(
     mut commands: Commands,
     keys: Res<Input<KeyCode>>,
+    audio: Res<Audio>,
+    dash_sound: Res<crate::DashSound>,
     mut query: Query<(Entity, &mut Player), (With<Runner>, Without<Dash>, Without<Cooldown>)>,
 ) {
     if let Ok((entity, mut player)) = query.get_single_mut() {        
         if keys.just_pressed(player.keys.action) {
             commands.entity(entity).insert(Dash);
-            player.velocity = DASH_VEL;
-
+            player.velocity = DASH_SPEED;
+            audio.play(dash_sound.0.clone());
 
             let tween = Tween::new(
                 EaseFunction::QuadraticInOut,
@@ -238,7 +233,7 @@ fn handle_action_button_for_runner(
                 Duration::from_secs((COOLDOWN_DUR + DASH_DUR) as u64),
                 DrawColorLens {
                     start: Vec3::new(1., 1., 1.),
-                    end: Vec3::new(0., 0., 1.,)
+                    end: Vec3::new(107./255., 186./255., 93./255.)
                 },
             );
             commands.entity(entity).insert(Animator::new(tween));
@@ -246,9 +241,10 @@ fn handle_action_button_for_runner(
     }
 }
 
-fn move_players(
+pub fn move_players(
     mut query: Query<(&mut Transform, &mut Player)>,
     windows: Res<Windows>,
+    time: Res<Time>,
 ) {
     let primary_window = windows.get_primary().unwrap();
     let x_dist = primary_window.width() / 2.;
@@ -257,7 +253,7 @@ fn move_players(
     for (mut transform, mut player) in query.iter_mut() {
         player.dir_vec = get_direction_vec(player.rotation);
 
-        transform.translation += player.dir_vec * player.velocity;
+        transform.translation += player.dir_vec * player.velocity * time.delta_seconds();
         
         if transform.translation.x.abs() > x_dist {
             transform.translation.x = transform.translation.x.signum() * x_dist;
@@ -273,7 +269,7 @@ fn move_players(
     }
 }
 
-fn handle_dash_timer_for_runner(
+pub fn handle_dash_timer_for_runner(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<DashTimer>,
@@ -291,7 +287,7 @@ fn handle_dash_timer_for_runner(
     }
 }
 
-fn handle_cooldown_timer_for_runner(
+pub fn handle_cooldown_timer_for_runner(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<CooldownTimer>,
@@ -308,7 +304,7 @@ fn handle_cooldown_timer_for_runner(
     }
 }
 
-fn get_direction_vec(angle: f32) -> Vec3 {
+pub fn get_direction_vec(angle: f32) -> Vec3 {
     let x = -angle.sin();
     let y = angle.cos();
 
