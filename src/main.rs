@@ -26,7 +26,7 @@ pub struct Random(StdRng);
 fn main() {
     App::new()
         .insert_resource(WindowDescriptor {
-            title: "Bevy tagger".to_string(),
+            title: "Bevy Tag".to_string(),
             width: 800.,
             height: 800.,
             vsync: false,

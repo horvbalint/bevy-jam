@@ -72,7 +72,7 @@ pub fn setup_main_menu(
                     },
                 },
                 TextSection {
-                    value: "Tagger".to_string(),
+                    value: "Tag".to_string(),
                     style: TextStyle {
                         font: font.0.clone(),
                         font_size: 70.0,
